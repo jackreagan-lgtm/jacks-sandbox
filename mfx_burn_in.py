@@ -3,6 +3,8 @@ import sys
 from subprocess import Popen, PIPE
 from typing import List
 import time
+import json
+import os
 
 class bcolors:
     HEADER = "\033[95m"
@@ -131,18 +133,50 @@ sources = {
                 "uaMax": 2500,
                 "settingsModel": "IXS320BP800P662",
             },
-            # # 130 kV Hamamatsu (this doesn't Exist!)
-            # {
-            #     "serialIdentifier": None,
-            #     "horizontalCropPercent": 100,
-            #     "kvMin": 40,
-            #     "kvMax": 130,
-            #     "uaMin": 0,
-            #     "uaMax": 300,
-            #     "settingsModel": "L9181-02",
-            # },
+            # 130 kV Hamamatsu (this doesn't Exist!)
+             {
+                 "serialIdentifier": "HAMAMATSU",
+                 "horizontalCropPercent": 100,
+                 "kvMin": 40,
+                 "kvMax": 130,
+                 "uaMin": 0,
+                 "uaMax": 300,
+                 "settingsModel": "L9181-02",
+             },
         ],
 }
+
+
+def write_source_settings(driver_type: str, model: str) -> None:
+    """
+    Update the main settings.json file with the detected source driver and model.
+    This ensures the correct driver is used for the detected source type.
+    
+    :param driver_type: Either "vjx" or "hamamatsu"
+    :param model: The model identifier for the source
+    """
+    settings_file = "/etc/seah/settings.json"
+    
+    try:
+        # Read the current settings
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+        
+        # Update the source section
+        if "source" not in settings:
+            settings["source"] = {}
+        
+        settings["source"]["driver"] = driver_type
+        settings["source"]["model"] = model
+        
+        # Write the updated settings back
+        with open(settings_file, 'w') as f:
+            json.dump(settings, f, indent=2)
+        
+        fancy_print(bcolors.OKGREEN, f"Settings updated: {driver_type} driver, model {model}")
+        
+    except Exception as e:
+        fancy_print(bcolors.WARNING, f"Could not update settings file: {e}")
 
 
 def get_return_SNUM():
@@ -193,7 +227,37 @@ def get_return_SNUM():
                 print(model)
                 print("kV range", source["kvMin"], " - ", source["kvMax"])
                 print("uA range", source["uaMin"], " - ", source["uaMax"])
+                
+                # Write VJX driver settings override
+                write_source_settings("vjx", model)
                 break
+    # 3. If no VJX found, try Hamamatsu Identification
+    if not model:
+        try:
+            # Hamamatsu often uses 38400 or 9600 depending on model
+            ser = Serial(port, baudrate=38400, timeout=0.5) 
+            fancy_print(bcolors.OKCYAN, "No VJX found. Checking for Hamamatsu...")
+            
+            # Hamamatsu command to get model/status (example: 'SHS' or just 'MOD')
+            # Adjust the command string based on your Hamamatsu manual
+            ser.write(b"SHS\r") 
+            rx = ser.read_until(terminator=b"\r", size=255)
+            
+            if rx:
+                response = rx.decode("ascii").strip()
+                fancy_print(bcolors.OKGREEN, f"Hamamatsu Response Received: {response}")
+                # Logic to identify Hamamatsu: Usually contains 'L' or specific model string
+                if "L9181" in response or "L12161" in response or len(response) > 0:
+                    for source in sources["xray_sources"]:
+                        if source["serialIdentifier"] == "HAMAMATSU":
+                            model = source["settingsModel"]
+                            
+                            # Write Hamamatsu driver settings override
+                            write_source_settings("hamamatsu", model)
+                            break
+            ser.close()
+        except Exception as e:
+            fancy_print(bcolors.FAIL, f"Hamamatsu check failed: {e}")
     with open("model_output_file.txt", "w") as f:
         f.write(model)
     return model
@@ -247,3 +311,4 @@ def main():
     return model
     
 main()
+
